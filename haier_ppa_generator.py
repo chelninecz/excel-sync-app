@@ -6,6 +6,30 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QMessageBox, QGroupBox, QFormLayout, QSplitter, QScrollArea)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
+import logging
+
+# --- Настройка логирования ---
+# Создаем логгер
+logger = logging.getLogger("PPA_Generator")
+logger.setLevel(logging.DEBUG) # DEBUG позволит записывать весь сырой текст из PDF
+
+# Формат сообщений: Дата Время - Уровень - Сообщение
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+# Обработчик для записи в файл (с поддержкой кириллицы)
+file_handler = logging.FileHandler("ppa_generator.log", encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(formatter)
+
+# Обработчик для вывода в консоль
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO) # В консоль выводим только основную информацию
+console_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+# -----------------------------
+
 
 # Библиотеки для работы с PDF и Excel
 try:
@@ -34,42 +58,58 @@ class PDFProcessor(QThread):
         self.pdf_path = pdf_path
 
     def run(self):
+        logger.info(f"Начало обработки файла: {self.pdf_path}")
         try:
             result = self.extract_data(self.pdf_path)
+            logger.info("Обработка PDF успешно завершена.")
             self.finished.emit(result)
         except Exception as e:
+            logger.error(f"Критическая ошибка при обработке PDF: {str(e)}", exc_info=True)
             self.error.emit(str(e))
 
     def extract_data(self, path):
         text_content = ""
         
-        # Попытка извлечь текст напрямую
+        # Попытка извлечь текст напрямую (улучшенные параметры tolerance)
+        logger.info("Попытка прямого извлечения текста (pdfplumber)...")
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                # Настройка tolerance помогает лучше собирать разбросанный текст чертежей
+            for i, page in enumerate(pdf.pages):
                 text = page.extract_text(x_tolerance=2, y_tolerance=3)
                 if text:
                     text_content += text + "\n"
         
-        # Если текста мало (вероятно, это скан или векторный чертеж без текстового слоя)
+        # Если текста мало (вероятно, это скан или векторный чертеж)
         if len(text_content.strip()) < 100:
-            print("Текст не найден или его мало. Запуск OCR...")
+            logger.warning("Текст не найден или его мало (скан/вектор). Запуск Tesseract OCR...")
             try:
-                # Улучшение: устанавливаем dpi=300 для высокого качества распознавания мелкого текста
+                # Устанавливаем dpi=300 для высокого качества распознавания
                 images = convert_from_path(path, dpi=300)
                 ocr_text = ""
-                for img in images:
-                    # lang='rus+eng+chi_sim' требует наличия этих языков в Tesseract
+                for i, img in enumerate(images):
+                    logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
                     ocr_page = pytesseract.image_to_string(img, lang='rus+eng+chi_sim')
                     ocr_text += ocr_page + "\n"
                 text_content = ocr_text
+                logger.info("OCR распознавание завершено.")
             except Exception as ocr_err:
-                print(f"OCR не удался: {ocr_err}")
+                logger.error(f"Ошибка Tesseract OCR: {ocr_err}")
         
+        # --- ЛОГИРОВАНИЕ СЫРОГО ТЕКСТА ---
+        logger.debug("--- ИЗВЛЕЧЕННЫЙ СЫРОЙ ТЕКСТ НАЧАЛО ---")
+        logger.debug(f"\n{text_content}")
+        logger.debug("--- ИЗВЛЕЧЕННЫЙ СЫРОЙ ТЕКСТ КОНЕЦ ---")
+        # ---------------------------------
+        
+        material = self.find_material(text_content)
+        tech_req = self.find_tech_requirements(text_content)
+        
+        logger.info(f"Найденный материал: '{material}'")
+        logger.info(f"Найдено технических требований: {len(tech_req)} пунктов")
+
         data = {
-            "material": self.find_material(text_content),
-            "tech_req": self.find_tech_requirements(text_content),
-            "raw_text": text_content # Для отладки
+            "material": material,
+            "tech_req": tech_req,
+            "raw_text": text_content
         }
         return data
 
@@ -78,7 +118,7 @@ class PDFProcessor(QThread):
         lines = text.split('\n')
         
         for line in lines:
-            # Улучшение: добавлена нечувствительность к регистру, учтено сокращение Matl.
+            # Нечувствительность к регистру, учет сокращения Matl.
             match = re.search(r'(?:Материал|Material|Matl\.?|材质)\s*[:：\-]\s*(.+?)(?:[;,.]|$)', line, re.IGNORECASE)
             if match:
                 mat = match.group(1).strip()
@@ -100,21 +140,21 @@ class PDFProcessor(QThread):
                 
         return ""
 
-        def find_tech_requirements(self, text):
+    def find_tech_requirements(self, text):
         """Извлечение технических требований с продвинутым поиском заголовка и расширенными синонимами"""
         requirements = []
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
         start_index = -1
         
-        # 1. Регулярные выражения для поиска заголовков (учитывают возможную нумерацию, например "1. Notes")
+        # 1. Регулярные выражения для поиска заголовков
         header_patterns = [
             r'^\s*(\d+[\.\)\、])?\s*(технические\s*требования|общие\s*указания|примечани[яе]|требования|спецификация|особые\s*отметки)',
             r'^\s*(\d+[\.\)\、])?\s*(technical\s*requirements|general\s*notes|notes|requirements|specifications)',
             r'^\s*(\d+[\.\)\、])?\s*(技术要求|注\s*意)'
         ]
         
-        # 2. Сжатые ключевые слова для поиска "разреженного" текста (когда между буквами пробелы: N O T E S)
+        # 2. Сжатые ключевые слова для поиска "разреженного" текста
         compressed_keywords = [
             "техническиетребования", "notes", "technicalrequirements", 
             "примечания", "技术要求", "общиеуказания", "generalnotes",
@@ -130,7 +170,7 @@ class PDFProcessor(QThread):
             # Проверка через регулярные выражения (обычный текст)
             match_regex = any(re.search(pat, lower_line) for pat in header_patterns)
             
-            # Проверка через сжатую строку (защита от слишком длинных строк, чтобы не захватить случайный текст)
+            # Проверка через сжатую строку
             match_compressed = any(kw in compressed_line for kw in compressed_keywords) and len(compressed_line) < 30
             
             if match_regex or match_compressed:
