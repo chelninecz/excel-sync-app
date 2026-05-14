@@ -337,7 +337,7 @@ class App(QMainWindow):
             
             wb.save(save_path)
             self.status_bar.showMessage(f"Файл успешно сохранен: {save_path}")
-            QMessageBox.success(self, "Успех", f"Файл успешно создан!\n{save_path}")
+            QMessageBox.information(self, "Успех", f"Файл успешно создан!\n{save_path}")
             
         except Exception as e:
             self.status_bar.showMessage("Ошибка сохранения")
