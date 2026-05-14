@@ -140,8 +140,8 @@ class PDFProcessor(QThread):
                 
         return ""
 
-    def find_tech_requirements(self, text):
-        """Извлечение технических требований с продвинутым поиском заголовка и расширенными синонимами"""
+        def find_tech_requirements(self, text):
+        """Извлечение технических требований с продвинутым поиском заголовка и улучшенными списками"""
         requirements = []
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
@@ -161,16 +161,16 @@ class PDFProcessor(QThread):
             "спецификация", "особыеотметки", "requirements", "specifications"
         ]
         
+        # УЛУЧШЕННЫЙ ПАТТЕРН ДЛЯ СПИСКОВ
+        # Ловит: "1.", "1 )", "l.", "I.", "1-", "1:", "* ", "• ", "a)"
+        list_pattern = r'^\s*(?:(?:\d+|[lI\|])\s*[\.\)\、\-\:]|[\*\-•·]\s+|[a-zA-Zа-яА-Я]\s*[\.\)]\s+)'
+        
         # Поиск заголовка блока
         for i, line in enumerate(lines):
             lower_line = line.lower()
-            # Удаляем все пробелы из строки для проверки разреженного текста
             compressed_line = re.sub(r'\s+', '', lower_line)
             
-            # Проверка через регулярные выражения (обычный текст)
             match_regex = any(re.search(pat, lower_line) for pat in header_patterns)
-            
-            # Проверка через сжатую строку
             match_compressed = any(kw in compressed_line for kw in compressed_keywords) and len(compressed_line) < 30
             
             if match_regex or match_compressed:
@@ -183,27 +183,27 @@ class PDFProcessor(QThread):
             for i in range(start_index + 1, len(lines)):
                 line = lines[i]
                 
-                # Признак конца блока (нашли новый крупный заголовок: капс, без цифр, короткий)
+                # Признак конца блока (капс, без цифр, короткий)
                 if line.isupper() and len(line) < 30 and not re.match(r'^\d', line) and len(line) > 3:
                     break
                 
-                # Если строка начинается с цифры с точкой, скобкой или китайской запятой
-                if re.match(r'^\d+[\.\)\、]', line):
+                # ИСПОЛЬЗУЕМ НОВЫЙ ПАТТЕРН ЗДЕСЬ
+                if re.match(list_pattern, line):
                     if current_req:
                         requirements.append(current_req.strip())
                     current_req = line
                 elif current_req:
-                    # Склеиваем многострочные пункты
                     current_req += " " + line
             
             if current_req:
                 requirements.append(current_req.strip())
                 
-        # Fallback: Если заголовок так и не найден, собираем любые нумерованные списки
+        # Fallback: Если заголовок не найден
         if not requirements:
             current_req = ""
             for line in lines:
-                if re.match(r'^\d+[\.\)\、]', line):
+                # ИСПОЛЬЗУЕМ НОВЫЙ ПАТТЕРН ЗДЕСЬ
+                if re.match(list_pattern, line):
                     if current_req:
                         requirements.append(current_req.strip())
                     current_req = line
