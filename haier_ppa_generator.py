@@ -100,47 +100,66 @@ class PDFProcessor(QThread):
                 
         return ""
 
-    def find_tech_requirements(self, text):
-        """Извлечение технических требований с поддержкой многострочных пунктов"""
+        def find_tech_requirements(self, text):
+        """Извлечение технических требований с продвинутым поиском заголовка и расширенными синонимами"""
         requirements = []
-        # Убираем пустые строки сразу
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
         start_index = -1
-        block_keywords = ["технические требования", "notes", "技术要求", "technical requirements", "примечания", "примечание"]
         
-        # Попытка найти заголовок блока
+        # 1. Регулярные выражения для поиска заголовков (учитывают возможную нумерацию, например "1. Notes")
+        header_patterns = [
+            r'^\s*(\d+[\.\)\、])?\s*(технические\s*требования|общие\s*указания|примечани[яе]|требования|спецификация|особые\s*отметки)',
+            r'^\s*(\d+[\.\)\、])?\s*(technical\s*requirements|general\s*notes|notes|requirements|specifications)',
+            r'^\s*(\d+[\.\)\、])?\s*(技术要求|注\s*意)'
+        ]
+        
+        # 2. Сжатые ключевые слова для поиска "разреженного" текста (когда между буквами пробелы: N O T E S)
+        compressed_keywords = [
+            "техническиетребования", "notes", "technicalrequirements", 
+            "примечания", "技术要求", "общиеуказания", "generalnotes",
+            "спецификация", "особыеотметки", "requirements", "specifications"
+        ]
+        
+        # Поиск заголовка блока
         for i, line in enumerate(lines):
             lower_line = line.lower()
-            # Проверяем, начинается ли строка с ключевого слова или содержит его (для коротких строк)
-            if any(lower_line.startswith(kw) for kw in block_keywords) or \
-               (any(kw in lower_line for kw in block_keywords) and len(line) < 40):
+            # Удаляем все пробелы из строки для проверки разреженного текста
+            compressed_line = re.sub(r'\s+', '', lower_line)
+            
+            # Проверка через регулярные выражения (обычный текст)
+            match_regex = any(re.search(pat, lower_line) for pat in header_patterns)
+            
+            # Проверка через сжатую строку (защита от слишком длинных строк, чтобы не захватить случайный текст)
+            match_compressed = any(kw in compressed_line for kw in compressed_keywords) and len(compressed_line) < 30
+            
+            if match_regex or match_compressed:
                 start_index = i
                 break
         
+        # Если заголовок найден, собираем пункты
         if start_index != -1:
             current_req = ""
             for i in range(start_index + 1, len(lines)):
                 line = lines[i]
                 
                 # Признак конца блока (нашли новый крупный заголовок: капс, без цифр, короткий)
-                if line.isupper() and len(line) < 30 and not re.match(r'^\d', line):
+                if line.isupper() and len(line) < 30 and not re.match(r'^\d', line) and len(line) > 3:
                     break
                 
-                # Если строка начинается с цифры с точкой, скобкой или китайской запятой (напр. "1.", "1)", "1、")
+                # Если строка начинается с цифры с точкой, скобкой или китайской запятой
                 if re.match(r'^\d+[\.\)\、]', line):
                     if current_req:
                         requirements.append(current_req.strip())
                     current_req = line
                 elif current_req:
-                    # Это продолжение предыдущего пункта, склеиваем
+                    # Склеиваем многострочные пункты
                     current_req += " " + line
             
-            # Не забываем добавить последний собранный пункт
             if current_req:
                 requirements.append(current_req.strip())
                 
-        # Fallback: Если заголовок не найден, ищем любые нумерованные списки по всему документу
+        # Fallback: Если заголовок так и не найден, собираем любые нумерованные списки
         if not requirements:
             current_req = ""
             for line in lines:
@@ -157,7 +176,7 @@ class PDFProcessor(QThread):
             if current_req:
                 requirements.append(current_req.strip())
         
-        # Возвращаем список (очищаем от случайного мусора)
+        # Очищаем результат от случайного мусора (слишком короткие строки)
         return [req for req in requirements if len(req) > 5]
 
 
