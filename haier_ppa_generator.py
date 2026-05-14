@@ -46,25 +46,25 @@ class PDFProcessor(QThread):
         # Попытка извлечь текст напрямую
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
-                text = page.extract_text()
+                # Настройка tolerance помогает лучше собирать разбросанный текст чертежей
+                text = page.extract_text(x_tolerance=2, y_tolerance=3)
                 if text:
                     text_content += text + "\n"
         
-        # Если текста мало, возможно это скан -> используем OCR
-        # Порог "мало текста" условный, например, меньше 50 символов на страницу
-        if len(text_content.strip()) < 50:
+        # Если текста мало (вероятно, это скан или векторный чертеж без текстового слоя)
+        if len(text_content.strip()) < 100:
             print("Текст не найден или его мало. Запуск OCR...")
             try:
-                images = convert_from_path(path)
+                # Улучшение: устанавливаем dpi=300 для высокого качества распознавания мелкого текста
+                images = convert_from_path(path, dpi=300)
                 ocr_text = ""
                 for img in images:
-                    # lang='rus+eng+chi_sim' требует установки этих пакетов языков в Tesseract
+                    # lang='rus+eng+chi_sim' требует наличия этих языков в Tesseract
                     ocr_page = pytesseract.image_to_string(img, lang='rus+eng+chi_sim')
                     ocr_text += ocr_page + "\n"
                 text_content = ocr_text
             except Exception as ocr_err:
                 print(f"OCR не удался: {ocr_err}")
-                # Если OCR упал, возвращаем то, что есть
         
         data = {
             "material": self.find_material(text_content),
@@ -76,68 +76,90 @@ class PDFProcessor(QThread):
     def find_material(self, text):
         """Поиск материала в тексте"""
         lines = text.split('\n')
-        patterns = [
-            r'(?:Материал|Material|材质)\s*[:：]\s*(.+?)(?:[;,.]|$)',
-            r'(?:Concrete|Бетон|混凝土|Пластик|Plastic|Сталь|Steel)\s*',
-        ]
         
-        # Ищем по ключевым словам в контексте
         for line in lines:
-            # Приоритет русскому и китайскому/английскому
-            if re.search(r'Материал\s*[:：]', line) or re.search(r'Material\s*[:：]', line) or re.search(r'材质', line):
-                # Очищаем строку от ключевых слов
-                mat = re.sub(r'.*?(?:Материал|Material|材质)\s*[:：]\s*', '', line)
-                mat = mat.split(';')[0].split('.')[0].strip()
-                if mat:
+            # Улучшение: добавлена нечувствительность к регистру, учтено сокращение Matl.
+            match = re.search(r'(?:Материал|Material|Matl\.?|材质)\s*[:：\-]\s*(.+?)(?:[;,.]|$)', line, re.IGNORECASE)
+            if match:
+                mat = match.group(1).strip()
+                if mat and len(mat) < 50:  # Защита от захвата слишком длинного текста
                     return mat
         
-        # Если явного маркера нет, ищем известные материалы во всем тексте
-        known_materials = ["Concrete", "Бетон", "混凝土", "Plastic", "Пластик", "Steel", "Сталь", "Алюминий", "Aluminum"]
+        # Расширенный список известных материалов
+        known_materials = [
+            "Concrete", "Бетон", "混凝土", 
+            "Plastic", "Пластик", "ABS", "PP", "PC", "PVC",
+            "Steel", "Сталь", "Stainless Steel", "Нержавеющая сталь", 
+            "Алюминий", "Aluminum", "Brass", "Латунь", "Copper", "Медь"
+        ]
+        
+        lower_text = text.lower()
         for mat in known_materials:
-            if mat in text:
+            if mat.lower() in lower_text:
                 return mat
                 
         return ""
 
     def find_tech_requirements(self, text):
-        """Извлечение технических требований как списка отдельных пунктов"""
+        """Извлечение технических требований с поддержкой многострочных пунктов"""
         requirements = []
-        lines = text.split('\n')
+        # Убираем пустые строки сразу
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
         
-        in_block = False
-        block_keywords = ["технические требования", "notes", "技术要求", "technical requirements"]
-        
-        # Попытка найти блок
         start_index = -1
+        block_keywords = ["технические требования", "notes", "技术要求", "technical requirements", "примечания", "примечание"]
+        
+        # Попытка найти заголовок блока
         for i, line in enumerate(lines):
             lower_line = line.lower()
-            if any(kw in lower_line for kw in block_keywords):
+            # Проверяем, начинается ли строка с ключевого слова или содержит его (для коротких строк)
+            if any(lower_line.startswith(kw) for kw in block_keywords) or \
+               (any(kw in lower_line for kw in block_keywords) and len(line) < 40):
                 start_index = i
                 break
         
         if start_index != -1:
-            # Собираем строки после заголовка
+            current_req = ""
             for i in range(start_index + 1, len(lines)):
-                line = lines[i].strip()
-                if not line:
-                    continue
-                # Если нашли конец блока (например, подпись или новый большой заголовок)
-                if len(line) < 5 and not line[0].isdigit():
+                line = lines[i]
+                
+                # Признак конца блока (нашли новый крупный заголовок: капс, без цифр, короткий)
+                if line.isupper() and len(line) < 30 and not re.match(r'^\d', line):
                     break
                 
-                # Фильтруем: оставляем строки, похожие на пункты требований
-                # Обычно они начинаются с цифры или содержат ключевые слова качества
-                if re.match(r'^\d+[.,、]', line) or any(w in line for w in ['должен', 'must', 'should', 'check', 'проверк', 'размер', 'size', 'mm', 'cm']):
-                    requirements.append(line)
-        
-        # Если список пуст, попробуем найти любые нумерованные списки в тексте
+                # Если строка начинается с цифры с точкой, скобкой или китайской запятой (напр. "1.", "1)", "1、")
+                if re.match(r'^\d+[\.\)\、]', line):
+                    if current_req:
+                        requirements.append(current_req.strip())
+                    current_req = line
+                elif current_req:
+                    # Это продолжение предыдущего пункта, склеиваем
+                    current_req += " " + line
+            
+            # Не забываем добавить последний собранный пункт
+            if current_req:
+                requirements.append(current_req.strip())
+                
+        # Fallback: Если заголовок не найден, ищем любые нумерованные списки по всему документу
         if not requirements:
+            current_req = ""
             for line in lines:
-                line = line.strip()
-                if re.match(r'^\d+[.,、]', line):
-                    requirements.append(line)
+                if re.match(r'^\d+[\.\)\、]', line):
+                    if current_req:
+                        requirements.append(current_req.strip())
+                    current_req = line
+                elif current_req and not line.isupper() and len(line) > 2:
+                    current_req += " " + line
+                else:
+                    if current_req:
+                        requirements.append(current_req.strip())
+                        current_req = ""
+            if current_req:
+                requirements.append(current_req.strip())
         
-        return requirements
+        # Возвращаем список (очищаем от случайного мусора)
+        return [req for req in requirements if len(req) > 5]
+
 
 class App(QMainWindow):
     def __init__(self):
