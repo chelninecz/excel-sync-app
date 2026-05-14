@@ -113,32 +113,64 @@ class PDFProcessor(QThread):
         }
         return data
 
-    def find_material(self, text):
-        """Поиск материала в тексте"""
-        lines = text.split('\n')
+        def find_material(self, text):
+        """Улучшенный поиск материала в тексте чертежа (Title Block)"""
+        # Убираем пустые строки для удобной работы с соседними строками
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
         
-        for line in lines:
-            # Нечувствительность к регистру, учет сокращения Matl.
-            match = re.search(r'(?:Материал|Material|Matl\.?|材质)\s*[:：\-]\s*(.+?)(?:[;,.]|$)', line, re.IGNORECASE)
+        # 1. Поиск по явным маркерам (с учетом двоеточий, тире или больших пробелов)
+        # Добавлены русские сокращения "Мат-л", "Мат.", английское "MAT."
+        marker_pattern = r'(?:Материал|Мат-л|Мат\.?|Material|Matl\.?|Mat\.?|材质)\s*(?:[:：\-]| {2,})\s*(.*)'
+        
+        for i, line in enumerate(lines):
+            match = re.search(marker_pattern, line, re.IGNORECASE)
             if match:
                 mat = match.group(1).strip()
-                if mat and len(mat) < 50:  # Защита от захвата слишком длинного текста
-                    return mat
+                
+                # Если после слова "Материал:" ничего нет, значение могло перенестись на следующую строку (в ячейку ниже)
+                if not mat and i + 1 < len(lines):
+                    next_line = lines[i+1]
+                    # Проверяем, что следующая строка не является другим заголовком штампа (Вес, Масштаб и т.д.)
+                    if len(next_line) < 50 and not re.search(r'(?:Weight|Mass|Scale|Масса|Масштаб|Вес)', next_line, re.IGNORECASE):
+                        mat = next_line.strip()
+                
+                # Очистка от мусора (если справа прилип другой текст из соседней колонки штампа через много пробелов)
+                mat = re.split(r' {2,}|\t', mat)[0].strip()
+                
+                # Ограничение длины защищает от случайного захвата целого абзаца
+                if mat and len(mat) < 60:  
+                    # Убираем возможные точки или лишние знаки на самом конце
+                    return mat.rstrip(';.,')
+
+        # 2. Умный поиск по словарю (если маркеры не сработали, а материал написан просто текстом)
         
-        # Расширенный список известных материалов
+        # Строгие аббревиатуры (ищутся с \b - граница слова, чтобы не найти "PC" внутри слова "PCS" или номера детали)
+        exact_acronyms = [r'\bABS\b', r'\bPP\b', r'\bPC\b', r'\bPVC\b', r'\bPOM\b', r'\bPE\b', r'\bPET\b']
+        
+        # Расширенный словарь обычных материалов
         known_materials = [
             "Concrete", "Бетон", "混凝土", 
-            "Plastic", "Пластик", "ABS", "PP", "PC", "PVC",
-            "Steel", "Сталь", "Stainless Steel", "Нержавеющая сталь", 
-            "Алюминий", "Aluminum", "Brass", "Латунь", "Copper", "Медь"
+            "Plastic", "Пластик", "Пластмасса",
+            "Stainless Steel", "Нержавеющая сталь", "Нержавейка",
+            "Steel", "Сталь",
+            "Aluminum", "Aluminium", "Алюминий", "Алюм.",
+            "Brass", "Латунь", "Copper", "Медь", "Bronze", "Бронза",
+            "Cast Iron", "Чугун", "Rubber", "Резина"
         ]
         
+        # Сначала ищем аббревиатуры пластиков (только точное совпадение слова)
+        for acronym in exact_acronyms:
+            if re.search(acronym, text): # Здесь регистр важен, ищем именно заглавные
+                return acronym.replace(r'\b', '') # Возвращаем без спецсимволов \b
+                
+        # Затем ищем обычные материалы (нечувствительно к регистру)
         lower_text = text.lower()
         for mat in known_materials:
             if mat.lower() in lower_text:
                 return mat
                 
         return ""
+
 
         def find_tech_requirements(self, text):
         """Извлечение технических требований с продвинутым поиском заголовка и улучшенными списками"""
