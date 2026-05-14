@@ -100,15 +100,12 @@ class PDFProcessor(QThread):
         return ""
 
     def find_tech_requirements(self, text):
-        """Извлечение технических требований"""
+        """Извлечение технических требований как списка отдельных пунктов"""
         requirements = []
         lines = text.split('\n')
         
         in_block = False
         block_keywords = ["технические требования", "notes", "技术要求", "technical requirements"]
-        
-        # Простой эвристический алгоритм: ищем нумерованный список после ключевых слов
-        # Или просто собираем строки, начинающиеся с цифры и точки/запятой
         
         # Попытка найти блок
         start_index = -1
@@ -131,8 +128,6 @@ class PDFProcessor(QThread):
                 # Фильтруем: оставляем строки, похожие на пункты требований
                 # Обычно они начинаются с цифры или содержат ключевые слова качества
                 if re.match(r'^\d+[.,、]', line) or any(w in line for w in ['должен', 'must', 'should', 'check', 'проверк', 'размер', 'size', 'mm', 'cm']):
-                    # Убираем дублирование языка, если нужно (упрощенно берем всё подряд)
-                    # В реальном проекте тут нужна сложная логика выбора языка
                     requirements.append(line)
         
         # Если список пуст, попробуем найти любые нумерованные списки в тексте
@@ -142,7 +137,7 @@ class PDFProcessor(QThread):
                 if re.match(r'^\d+[.,、]', line):
                     requirements.append(line)
         
-        return "\n".join(requirements)
+        return requirements
 
 class App(QMainWindow):
     def __init__(self):
@@ -273,7 +268,8 @@ class App(QMainWindow):
             self.in_material.setText(data['material'])
         
         if data['tech_req']:
-            self.edt_tech_req.setText(data['tech_req'])
+            # Отображаем требования в виде текста для предпросмотра (каждый пункт с новой строки)
+            self.edt_tech_req.setText("\n".join(data['tech_req']))
         else:
             self.edt_tech_req.setText("Требования не найдены автоматически. Пожалуйста, введите их вручную.")
             
@@ -304,14 +300,29 @@ class App(QMainWindow):
             wb = openpyxl.load_workbook(self.template_path)
             ws = wb.active # Берем первый лист
             
-            # Данные для замены
+            # Получаем текст требований и разбиваем на пункты
+            tech_req_text = self.edt_tech_req.toPlainText()
+            # Разбиваем по строкам, убираем пустые
+            tech_req_list = [line.strip() for line in tech_req_text.split('\n') if line.strip()]
+            
+            # Данные для замены (базовые)
             replacements = {
                 "{SUPPLIER}": self.in_supplier.text(),
                 "{PART_NAME}": self.in_part_name.text(),
                 "{PART_NUMBER}": self.in_part_number.text(),
                 "{MATERIAL}": self.in_material.text(),
-                "{TECH_REQ}": self.edt_tech_req.toPlainText()
             }
+            
+            # Добавляем первые 5 требований в replacements
+            for i in range(5):
+                key = f"{{TECH_REQ_{i+1}}}"
+                if i < len(tech_req_list):
+                    replacements[key] = tech_req_list[i]
+                else:
+                    replacements[key] = ""  # Если требований меньше, чем ячеек, оставляем пустым
+            
+            # Также поддерживаем старый ключ {TECH_REQ} для совместимости (все требования вместе)
+            replacements["{TECH_REQ}"] = tech_req_text
             
             # Проход по всем ячейкам
             for row in ws.iter_rows():
@@ -325,12 +336,10 @@ class App(QMainWindow):
                             if key in modified:
                                 modified = modified.replace(key, val)
                         
-                        # Особая обработка для длинного текста требований
-                        if key == "{TECH_REQ}" and key in original:
+                        # Особая обработка для длинного текста требований (если используется общий ключ)
+                        if "{TECH_REQ}" in original and "{TECH_REQ_" not in original:
                             # Включаем перенос по словам
                             cell.alignment = cell.alignment.copy(wrap_text=True)
-                            # Можно принудительно задать высоту строки, если нужно
-                            # ws.row_dimensions[cell.row].height = 100 
                         
                         if modified != original:
                             cell.value = modified
