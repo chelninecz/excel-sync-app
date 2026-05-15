@@ -99,7 +99,7 @@ class PDFProcessor(QThread):
                      raise FileNotFoundError(f"Poppler не найден в {poppler_path}")
 
                 logger.info(f"Используем poppler из: {poppler_path}")
-                images = convert_from_path(path, dpi=300, poppler_path=poppler_path)
+                images = convert_from_path(path, dpi=400, poppler_path=poppler_path)
               
                 # --- АВТОМАТИЧЕСКИЙ ПОИСК TESSERACT РЯДОМ СО СКРИПТОМ ---
                 tesseract_path = os.path.join(base_path, 'Tesseract-OCR', 'tesseract.exe')
@@ -190,9 +190,39 @@ class PDFProcessor(QThread):
         return ""
 
     def find_tech_requirements(self, text):
-        """Извлечение требований с объединением двуязычных пунктов (Китайский + Английский)"""
+        """Извлечение требований с очисткой от мусора штампа чертежа и склейкой"""
         requirements = []
+        
+        # --- 1. ОЧИСТКА ТЕКСТА ---
+        # Удаляем лишние пробелы между китайскими иероглифами, которые генерирует OCR
+        text = re.sub(r'([一-龥])\s+([一-龥])', r'\1\2', text)
+        
         lines = [line.strip() for line in text.split('\n') if line.strip()]
+        cleaned_lines = []
+        
+        # Паттерны мусора из штампа (Title Block), которые Tesseract случайно приклеивает справа
+        noise_patterns = [
+            r'\bDWG\s*No.*', r'审核\s*REVIEW.*', r'设计\s*DESIGN.*',
+            r'会签\s*CHECK.*', r'批准\s*APPROVE.*', r'日期\s*DATE.*',
+            r'标记\s*MARK.*', r'单位\s*DIMENSION.*', r'质量\s*WEIGHT.*',
+            r'比例\s*SCALE.*', r'共\s*\d+\s*张.*', r'第\s*\d+\s*张.*',
+            r'Calibri\b.*', r'俄罗斯洗衣机能耗贴.*', r'HAIER WASHING MACHINE.*',
+            r'Type:\s*Calibri.*'
+        ]
+        
+        for line in lines:
+            cl = line
+            # Отрезаем мусор, если он попал в строку
+            for pat in noise_patterns:
+                cl = re.sub(pat, '', cl, flags=re.IGNORECASE)
+            cl = cl.strip()
+            # Пропускаем совсем короткий мусор, попавший в отдельную строку
+            if len(cl) > 2 and not re.match(r'^\d+\)\s*©.*', cl): # Исключаем шум вида "5) ©) 49x65"
+                cleaned_lines.append(cl)
+                
+        lines = cleaned_lines
+        # ------------------------
+
         start_index = -1
         
         header_patterns = [
@@ -207,7 +237,8 @@ class PDFProcessor(QThread):
             "спецификация", "особыеотметки", "requirements", "specifications"
         ]
         
-        list_pattern = r'^\s*(?:(?:\d+|[lI\|])\s*[\.\)\、\-\:]|[\*\-•·]\s+|[a-zA-Zа-яА-Я]\s*[\.\)]\s+)'
+        # Добавлен допуск на треугольники (△, A) перед номером, которые часто ставят инженеры
+        list_pattern = r'^\s*(?:[△∆▲A-Z]\s*)?(?:\d+|[lI\|])\s*[\.\)\、\-\:]'
         
         for i, line in enumerate(lines):
             lower_line = line.lower()
@@ -231,13 +262,11 @@ class PDFProcessor(QThread):
                 
                 match = re.match(list_pattern, line)
                 if match:
-                    # Извлекаем номер пункта, чтобы понять, это новый пункт или перевод старого
                     num_match = re.search(r'\d+', match.group())
                     num = num_match.group() if num_match else None
                     
                     if current_req:
                         if num and current_num == num:
-                            # Номер совпадает с предыдущим -> это перевод! Объединяем их.
                             current_req += "\n" + line
                             continue
                         else:
