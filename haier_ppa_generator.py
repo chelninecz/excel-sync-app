@@ -70,73 +70,100 @@ class PDFProcessor(QThread):
         except Exception as e:
             logger.error(f"Ошибка pdfplumber: {e}")
         
-        # Предварительная проверка найденных данных
         material = self.find_material(text_content)
         tech_req = self.find_tech_requirements(text_content)
         
-        # Если pdfplumber не нашел требования (текст в кривых) 
-        # или текста слишком мало (< 300 символов), принудительно запускаем RapidOCR!
         if len(text_content.strip()) < 300 or not tech_req:
             logger.warning("Требования не найдены напрямую (возможно текст в кривых). Запуск RapidOCR...")
             try:
-                # --- АВТОМАТИЧЕСКИЙ ПОИСК POPPLER РЯДОМ СО СКРИПТОМ ---
                 if getattr(sys, 'frozen', False):
                     base_path = sys._MEIPASS
                 else:
                     base_path = os.path.dirname(os.path.abspath(__file__))
                 
                 poppler_path = os.path.join(base_path, 'poppler', 'Library', 'bin')
-                
-                if not os.path.exists(poppler_path):
-                     logger.error(f"Не найдена папка poppler по пути: {poppler_path}. Пожалуйста, положите папку poppler рядом со скриптом.")
-                     raise FileNotFoundError(f"Poppler не найден в {poppler_path}")
-
-                logger.info(f"Используем poppler из: {poppler_path}")
                 images = convert_from_path(path, dpi=400, poppler_path=poppler_path)
               
-                # --- ИСПОЛЬЗОВАНИЕ RAPID OCR ВМЕСТО TESSERACT ---
-                logger.info("Инициализация движка RapidOCR...")
+                logger.info("Инициализация движка RapidOCR с геометрической реконструкцией текста...")
                 ocr_engine = RapidOCR()
                 
                 ocr_text = ""
                 for i, img in enumerate(images):
                     logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
-                    # RapidOCR ожидает numpy массив
                     img_np = np.array(img)
-                    
-                    # result - это список блоков, elapse - время выполнения
                     result, elapse = ocr_engine(img_np)
                     
                     if result:
-                        for line in result:
-                            # line[1] содержит распознанный текст из блока
-                            recognized_text = line[1]
-                            ocr_text += recognized_text + "\n"
+                        # 1. Сортируем блоки по Y (сверху вниз)
+                        sorted_by_y = sorted(result, key=lambda b: sum(pt[1] for pt in b[0]) / 4)
+                        lines_blocks = []
+                        current_line = []
+                        
+                        for box in sorted_by_y:
+                            if not current_line:
+                                current_line.append(box)
+                                continue
+                                
+                            prev_box = current_line[-1]
+                            y_prev = sum(pt[1] for pt in prev_box[0]) / 4
+                            y_curr = sum(pt[1] for pt in box[0]) / 4
+                            h_curr = box[0][3][1] - box[0][0][1]
+                            
+                            # Если разница по Y меньше половины высоты строки - это одна строка
+                            if abs(y_curr - y_prev) < (h_curr * 0.6):
+                                current_line.append(box)
+                            else:
+                                lines_blocks.append(current_line)
+                                current_line = [box]
+                                
+                        if current_line:
+                            lines_blocks.append(current_line)
+                            
+                        # 2. Склеиваем строки, соблюдая горизонтальные (X) отступы
+                        page_text = ""
+                        for line_boxes in lines_blocks:
+                            # Сортируем блоки в строке по X (слева направо)
+                            line_boxes.sort(key=lambda b: sum(pt[0] for pt in b[0]) / 4)
+                            line_str = ""
+                            last_x = 0
+                            
+                            for b in line_boxes:
+                                x_min = min(pt[0] for pt in b[0])
+                                text = b[1]
+                                
+                                if last_x == 0:
+                                    line_str += text
+                                else:
+                                    gap = x_min - last_x
+                                    h = b[0][3][1] - b[0][0][1]
+                                    # Если расстояние между блоками большое (разные колонки), ставим большой разделитель
+                                    if gap > h * 2:
+                                        line_str += "    " + text
+                                    else:
+                                        line_str += " " + text
+                                last_x = max(pt[0] for pt in b[0])
+                                
+                            page_text += line_str + "\n"
+                            
+                        ocr_text += page_text + "\n"
                 
-                # Добавляем распознанный текст к общему (если что-то было)
                 text_content = text_content + "\n\n" + ocr_text
                 logger.info("RapidOCR распознавание завершено.")
                 
-                # Повторный поиск в распознанном OCR тексте
                 material = self.find_material(text_content) or material
                 tech_req = self.find_tech_requirements(text_content)
                 
             except Exception as ocr_err:
                 logger.error(f"Ошибка RapidOCR: {ocr_err}")
         
-        logger.debug("--- ИЗВЛЕЧЕННЫЙ СЫРОЙ ТЕКСТ НАЧАЛО ---")
-        logger.debug(f"\n{text_content}")
-        logger.debug("--- ИЗВЛЕЧЕННЫЙ СЫРОЙ ТЕКСТ КОНЕЦ ---")
-        
         logger.info(f"Найденный материал: '{material}'")
         logger.info(f"Найдено технических требований: {len(tech_req)} пунктов")
         
-        data = {
+        return {
             "material": material,
             "tech_req": tech_req,
             "raw_text": text_content
         }
-        return data
 
     def find_material(self, text):
         """Улучшенный поиск материала в тексте чертежа (Title Block)"""
@@ -202,10 +229,7 @@ class PDFProcessor(QThread):
         return ""
 
     def find_tech_requirements(self, text):
-        """Извлечение требований с отсечением штампа чертежа"""
         requirements = []
-        
-        # --- 1. ОЧИСТКА ТЕКСТА ---
         text = re.sub(r'([一-龥])\s+([一-龥])', r'\1\2', text)
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         cleaned_lines = []
@@ -220,6 +244,9 @@ class PDFProcessor(QThread):
         
         for line in lines:
             cl = line
+            # Очистка левого вертикального штампа чертежа
+            cl = re.sub(r'(旧底图总号|底图总号|签\s*字|版\s*次)', '', cl)
+            
             for splitter in noise_splitters:
                 cl = re.split(splitter, cl, flags=re.IGNORECASE)[0]
             
@@ -228,8 +255,6 @@ class PDFProcessor(QThread):
                 cleaned_lines.append(cl)
                 
         lines = cleaned_lines
-        # ------------------------
-        
         start_index = -1
         
         header_patterns = [
@@ -244,7 +269,8 @@ class PDFProcessor(QThread):
             "спецификация", "особыеотметки", "requirements", "specifications"
         ]
         
-        list_pattern = r'^\s*(?:[△∆▲A-Z]\s*)?(?:\d+|[lI\|])\s*[\.\)\、\-\:]'
+        # ИЗМЕНЕНИЕ: Улучшенный паттерн (захватывает "6背面附胶" без точки после цифры)
+        list_pattern = r'^\s*(?:[△∆▲A-Z]\s*)?(?:\d+|[lI\|])\s*(?:[\.\)\、\-\:]|(?=[\u4e00-\u9fa5])|\s+(?=[A-Za-z\u4e00-\u9fa5]))'
         
         for i, line in enumerate(lines):
             lower_line = line.lower()
@@ -286,6 +312,7 @@ class PDFProcessor(QThread):
                 requirements.append(current_req.strip())
                 
         if not requirements:
+            # Резервный поиск, если не найден заголовок
             current_req = ""
             current_num = None
             for line in lines:
