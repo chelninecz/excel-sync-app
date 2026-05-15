@@ -28,16 +28,15 @@ logger.addHandler(console_handler)
 
 try:
     import pdfplumber
-    import pytesseract
     from pdf2image import convert_from_path
     import openpyxl
+    import numpy as np
+    from rapidocr_onnxruntime import RapidOCR
 except ImportError as e:
     print(f"Ошибка импорта библиотек: {e}")
-    print("Убедитесь, что установлены: pip install pdfplumber pytesseract pdf2image openpyxl pillow")
-    print("Также необходим установленный Tesseract-OCR в системе.")
+    print("Убедитесь, что установлены: pip install pdfplumber pdf2image openpyxl pillow numpy rapidocr-onnxruntime PyQt6")
     sys.exit(1)
 
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 class PDFProcessor(QThread):
     """Поток для обработки PDF, чтобы не замораживать интерфейс"""
@@ -75,25 +74,19 @@ class PDFProcessor(QThread):
         material = self.find_material(text_content)
         tech_req = self.find_tech_requirements(text_content)
         
-        # ГЛАВНОЕ ИСПРАВЛЕНИЕ: Если pdfplumber не нашел требования (текст в кривых) 
-        # или текста слишком мало (< 300 символов), принудительно запускаем OCR!
+        # Если pdfplumber не нашел требования (текст в кривых) 
+        # или текста слишком мало (< 300 символов), принудительно запускаем RapidOCR!
         if len(text_content.strip()) < 300 or not tech_req:
-            logger.warning("Требования не найдены напрямую (возможно текст в кривых). Запуск Tesseract OCR...")
+            logger.warning("Требования не найдены напрямую (возможно текст в кривых). Запуск RapidOCR...")
             try:
                 # --- АВТОМАТИЧЕСКИЙ ПОИСК POPPLER РЯДОМ СО СКРИПТОМ ---
-                # Получаем абсолютный путь к папке, где лежит наш скрипт (или .exe, если скомпилируем)
                 if getattr(sys, 'frozen', False):
-                    # Если программа скомпилирована через PyInstaller
                     base_path = sys._MEIPASS
                 else:
-                    # Если запускаем как обычный .py скрипт
                     base_path = os.path.dirname(os.path.abspath(__file__))
                 
-                # Формируем путь к папке bin внутри poppler
-                # Ожидается структура: папка_со_скриптом/poppler/Library/bin
                 poppler_path = os.path.join(base_path, 'poppler', 'Library', 'bin')
                 
-                # Проверяем, действительно ли poppler там лежит (чтобы вывести понятную ошибку, если папки нет)
                 if not os.path.exists(poppler_path):
                      logger.error(f"Не найдена папка poppler по пути: {poppler_path}. Пожалуйста, положите папку poppler рядом со скриптом.")
                      raise FileNotFoundError(f"Poppler не найден в {poppler_path}")
@@ -101,34 +94,35 @@ class PDFProcessor(QThread):
                 logger.info(f"Используем poppler из: {poppler_path}")
                 images = convert_from_path(path, dpi=400, poppler_path=poppler_path)
               
-                # --- АВТОМАТИЧЕСКИЙ ПОИСК TESSERACT РЯДОМ СО СКРИПТОМ ---
-                tesseract_path = os.path.join(base_path, 'Tesseract-OCR', 'tesseract.exe')
-                
-                if not os.path.exists(tesseract_path):
-                    logger.error(f"Не найден Tesseract по пути: {tesseract_path}. Пожалуйста, положите папку Tesseract-OCR рядом со скриптом.")
-                    raise FileNotFoundError(f"Tesseract не найден в {tesseract_path}")
-                
-                # Указываем библиотеке точный путь к exe-файлу
-                pytesseract.pytesseract.tesseract_cmd = tesseract_path
-                logger.info(f"Используем tesseract из: {tesseract_path}")
-                # ---------------------------------------------------------
+                # --- ИСПОЛЬЗОВАНИЕ RAPID OCR ВМЕСТО TESSERACT ---
+                logger.info("Инициализация движка RapidOCR...")
+                ocr_engine = RapidOCR()
                 
                 ocr_text = ""
                 for i, img in enumerate(images):
                     logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
-                    ocr_page = pytesseract.image_to_string(img, lang='rus+eng+chi_sim')
-                    ocr_text += ocr_page + "\n"
+                    # RapidOCR ожидает numpy массив
+                    img_np = np.array(img)
+                    
+                    # result - это список блоков, elapse - время выполнения
+                    result, elapse = ocr_engine(img_np)
+                    
+                    if result:
+                        for line in result:
+                            # line[1] содержит распознанный текст из блока
+                            recognized_text = line[1]
+                            ocr_text += recognized_text + "\n"
                 
-                # Добавляем распознанный текст к общему
+                # Добавляем распознанный текст к общему (если что-то было)
                 text_content = text_content + "\n\n" + ocr_text
-                logger.info("OCR распознавание завершено.")
+                logger.info("RapidOCR распознавание завершено.")
                 
                 # Повторный поиск в распознанном OCR тексте
                 material = self.find_material(text_content) or material
                 tech_req = self.find_tech_requirements(text_content)
                 
             except Exception as ocr_err:
-                logger.error(f"Ошибка Tesseract OCR: {ocr_err}")
+                logger.error(f"Ошибка RapidOCR: {ocr_err}")
         
         logger.debug("--- ИЗВЛЕЧЕННЫЙ СЫРОЙ ТЕКСТ НАЧАЛО ---")
         logger.debug(f"\n{text_content}")
@@ -148,8 +142,6 @@ class PDFProcessor(QThread):
         """Улучшенный поиск материала в тексте чертежа (Title Block)"""
         lines = [line.strip() for line in text.split('\n') if line.strip()]
       
-        # Добавлено слово "材料" для китайских чертежей
-        # Обновленный поиск материала
         marker_pattern = r'(?:Материал|Мат-л|Мат\.?|Material|Matl\.?|Mat\.?|材质|材料)\s*(?:[:：\-]| {2,})\s*(.*)'
         
         for i, line in enumerate(lines):
@@ -164,7 +156,6 @@ class PDFProcessor(QThread):
                 
                 mat = re.split(r' {2,}|\t', mat)[0].strip()
                 
-                # ИЗМЕНЕНИЕ: Добавлена защита от китайского названия компании
                 mat_upper = mat.upper()
                 if not mat or "HAIER" in mat_upper or "COMPANY" in mat_upper or "INDUSTR" in mat_upper or "海尔" in mat or "产业" in mat:
                     continue 
@@ -219,7 +210,6 @@ class PDFProcessor(QThread):
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         cleaned_lines = []
         
-        # Разделители: отсекаем всё, что правее этих слов (так как штамп находится справа от требований)
         noise_splitters = [
             r'\bDWG\s*No', r'审核\s*REVIEW', r'设计\s*DESIGN', r'会签\s*CHECK',
             r'批准\s*APPROVE', r'日期\s*DATE', r'标记\s*MARK', r'单位\s*DIMENSION',
@@ -230,12 +220,10 @@ class PDFProcessor(QThread):
         
         for line in lines:
             cl = line
-            # Если в строке есть слово из штампа, отсекаем всё, что после него (включая само слово)
             for splitter in noise_splitters:
                 cl = re.split(splitter, cl, flags=re.IGNORECASE)[0]
             
             cl = cl.strip()
-            # Пропускаем мусор
             if len(cl) > 2 and not re.match(r'^\d+\)\s*©.*', cl):
                 cleaned_lines.append(cl)
                 
@@ -243,7 +231,6 @@ class PDFProcessor(QThread):
         # ------------------------
         
         start_index = -1
-        # ... (ДАЛЬШЕ ИДЕТ ВАШ СТАРЫЙ КОД МЕТОДА БЕЗ ИЗМЕНЕНИЙ, начиная со start_index = -1) ...
         
         header_patterns = [
             r'^\s*(\d+[\.\)\、])?\s*(технические\s*требования|общие\s*указания|примечани[яе]|требования|спецификация|особые\s*отметки)',
@@ -257,7 +244,6 @@ class PDFProcessor(QThread):
             "спецификация", "особыеотметки", "requirements", "specifications"
         ]
         
-        # Добавлен допуск на треугольники (△, A) перед номером, которые часто ставят инженеры
         list_pattern = r'^\s*(?:[△∆▲A-Z]\s*)?(?:\d+|[lI\|])\s*[\.\)\、\-\:]'
         
         for i, line in enumerate(lines):
@@ -432,7 +418,7 @@ class App(QMainWindow):
         
         self.btn_process.setEnabled(False)
         self.btn_process.setText("Обработка...")
-        self.status_bar.showMessage("Идет анализ PDF и распознавание текста...")
+        self.status_bar.showMessage("Идет анализ PDF и распознавание текста (RapidOCR)...")
         
         self.processor = PDFProcessor(self.pdf_path)
         self.processor.finished.connect(self.on_processing_finished)
@@ -448,88 +434,10 @@ class App(QMainWindow):
             self.in_material.setText(data['material'])
         
         if data['tech_req']:
-            # ВАЖНО: Разделяем пункты ПУСТОЙ СТРОКОЙ (\n\n), чтобы внутренние переводы строк не ломали логику
             self.edt_tech_req.setText("\n\n".join(data['tech_req']))
         else:
             self.edt_tech_req.setText("Требования не найдены автоматически. Пожалуйста, введите их вручную.")
             
         self.btn_generate.setEnabled(True)
         
-        if not data['material'] or not data['tech_req']:
-            QMessageBox.information(self, "Внимание", "Некоторые данные не удалось распознать автоматически. Пожалуйста, проверьте поля и дополните их вручную.")
-
-    def on_processing_error(self, msg):
-        self.btn_process.setEnabled(True)
-        self.btn_process.setText("Анализировать PDF")
-        self.status_bar.showMessage("Ошибка при обработке")
-        QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при чтении PDF:\n{msg}")
-
-    def generate_excel(self):
-        if not self.template_path:
-            QMessageBox.warning(self, "Ошибка", "Выберите шаблон Excel!")
-            return
-        
-        save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить результат", "", "Excel Files (*.xlsx)")
-        if not save_path:
-            return
-            
-        try:
-            self.status_bar.showMessage("Генерация файла...")
-            
-            wb = openpyxl.load_workbook(self.template_path)
-            ws = wb.active 
-            
-            tech_req_text = self.edt_tech_req.toPlainText()
-            
-            # ВАЖНО: Разбиваем текст только по ПУСТЫМ строкам (сохраняя переводы внутри пункта)
-            tech_req_list = [item.strip() for item in re.split(r'\n\s*\n', tech_req_text) if item.strip()]
-            
-            replacements = {
-                "{SUPPLIER}": self.in_supplier.text(),
-                "{PART_NAME}": self.in_part_name.text(),
-                "{PART_NUMBER}": self.in_part_number.text(),
-                "{MATERIAL}": self.in_material.text(),
-            }
-            
-            # Теперь поддерживаем до 50 требований, а не 5!
-            for i in range(50):
-                key = f"{{TECH_REQ_{i+1}}}"
-                if i < len(tech_req_list):
-                    replacements[key] = tech_req_list[i]
-                else:
-                    replacements[key] = ""  
-            
-            replacements["{TECH_REQ}"] = tech_req_text
-            
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.value and isinstance(cell.value, str):
-                        original = str(cell.value)
-                        
-                        # Защита от опечаток: убираем лишние пробелы в Excel { TECH_REQ_1 } -> {TECH_REQ_1}
-                        modified = re.sub(r'\{\s+([^}]+?)\s+\}', r'{\1}', original)
-                        
-                        for key, val in replacements.items():
-                            if key in modified:
-                                modified = modified.replace(key, val)
-                        
-                        if modified != original:
-                            cell.value = modified
-                            # Если текст длинный, автоматически включаем перенос по словам в ячейке
-                            if "{" not in modified and len(modified) > 15:
-                                cell.alignment = cell.alignment.copy(wrap_text=True)
-            
-            wb.save(save_path)
-            self.status_bar.showMessage(f"Файл успешно сохранен: {save_path}")
-            QMessageBox.information(self, "Успех", f"Файл успешно создан!\n{save_path}")
-            
-        except Exception as e:
-            self.status_bar.showMessage("Ошибка сохранения")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось создать файл:\n{str(e)}")
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    window = App()
-    window.show()
-    sys.exit(app.exec())
+     
