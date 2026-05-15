@@ -440,4 +440,77 @@ class App(QMainWindow):
             
         self.btn_generate.setEnabled(True)
         
-     
+        if not data['material'] or not data['tech_req']:
+            QMessageBox.information(self, "Внимание", "Некоторые данные не удалось распознать автоматически. Пожалуйста, проверьте поля и дополните их вручную.")
+
+    def on_processing_error(self, msg):
+        self.btn_process.setEnabled(True)
+        self.btn_process.setText("Анализировать PDF")
+        self.status_bar.showMessage("Ошибка при обработке")
+        QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при чтении PDF:\n{msg}")
+
+    def generate_excel(self):
+        if not self.template_path:
+            QMessageBox.warning(self, "Ошибка", "Выберите шаблон Excel!")
+            return
+        
+        save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить результат", "", "Excel Files (*.xlsx)")
+        if not save_path:
+            return
+            
+        try:
+            self.status_bar.showMessage("Генерация файла...")
+            
+            wb = openpyxl.load_workbook(self.template_path)
+            ws = wb.active 
+            
+            tech_req_text = self.edt_tech_req.toPlainText()
+            
+            tech_req_list = [item.strip() for item in re.split(r'\n\s*\n', tech_req_text) if item.strip()]
+            
+            replacements = {
+                "{SUPPLIER}": self.in_supplier.text(),
+                "{PART_NAME}": self.in_part_name.text(),
+                "{PART_NUMBER}": self.in_part_number.text(),
+                "{MATERIAL}": self.in_material.text(),
+            }
+            
+            for i in range(50):
+                key = f"{{TECH_REQ_{i+1}}}"
+                if i < len(tech_req_list):
+                    replacements[key] = tech_req_list[i]
+                else:
+                    replacements[key] = ""  
+            
+            replacements["{TECH_REQ}"] = tech_req_text
+            
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.value and isinstance(cell.value, str):
+                        original = str(cell.value)
+                        
+                        modified = re.sub(r'\{\s+([^}]+?)\s+\}', r'{\1}', original)
+                        
+                        for key, val in replacements.items():
+                            if key in modified:
+                                modified = modified.replace(key, val)
+                        
+                        if modified != original:
+                            cell.value = modified
+                            if "{" not in modified and len(modified) > 15:
+                                cell.alignment = cell.alignment.copy(wrap_text=True)
+            
+            wb.save(save_path)
+            self.status_bar.showMessage(f"Файл успешно сохранен: {save_path}")
+            QMessageBox.information(self, "Успех", f"Файл успешно создан!\n{save_path}")
+            
+        except Exception as e:
+            self.status_bar.showMessage("Ошибка сохранения")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать файл:\n{str(e)}")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = App()
+    window.show()
+    sys.exit(app.exec())
