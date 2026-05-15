@@ -100,6 +100,17 @@ class PDFProcessor(QThread):
 
                 logger.info(f"Используем poppler из: {poppler_path}")
                 images = convert_from_path(path, dpi=300, poppler_path=poppler_path)
+              
+                # --- АВТОМАТИЧЕСКИЙ ПОИСК TESSERACT РЯДОМ СО СКРИПТОМ ---
+                tesseract_path = os.path.join(base_path, 'Tesseract-OCR', 'tesseract.exe')
+                
+                if not os.path.exists(tesseract_path):
+                    logger.error(f"Не найден Tesseract по пути: {tesseract_path}. Пожалуйста, положите папку Tesseract-OCR рядом со скриптом.")
+                    raise FileNotFoundError(f"Tesseract не найден в {tesseract_path}")
+                
+                # Указываем библиотеке точный путь к exe-файлу
+                pytesseract.pytesseract.tesseract_cmd = tesseract_path
+                logger.info(f"Используем tesseract из: {tesseract_path}")
                 # ---------------------------------------------------------
                 
                 ocr_text = ""
