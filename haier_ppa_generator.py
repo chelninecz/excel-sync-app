@@ -211,7 +211,6 @@ class PDFProcessor(QThread):
         return ""
 
     def find_tech_requirements(self, text):
-    def find_tech_requirements(self, text):
         """Извлечение требований с отсечением штампа чертежа"""
         requirements = []
         
