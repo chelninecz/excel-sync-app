@@ -116,7 +116,7 @@ class PDFProcessor(QThread):
                 ocr_text = ""
                 for i, img in enumerate(images):
                     logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
-                    ocr_page = pytesseract.image_to_string(img, lang='rus+eng+chi_sim')
+                    ocr_page = pytesseract.image_to_string(img, lang='rus+eng+chi_sim', config='--psm 6')
                     ocr_text += ocr_page + "\n"
                 
                 # Добавляем распознанный текст к общему
@@ -149,7 +149,28 @@ class PDFProcessor(QThread):
         lines = [line.strip() for line in text.split('\n') if line.strip()]
       
         # Добавлено слово "材料" для китайских чертежей
+        # Обновленный поиск материала
         marker_pattern = r'(?:Материал|Мат-л|Мат\.?|Material|Matl\.?|Mat\.?|材质|材料)\s*(?:[:：\-]| {2,})\s*(.*)'
+        
+        for i, line in enumerate(lines):
+            match = re.search(marker_pattern, line, re.IGNORECASE)
+            if match:
+                mat = match.group(1).strip()
+                
+                if not mat and i + 1 < len(lines):
+                    next_line = lines[i+1]
+                    if len(next_line) < 50 and not re.search(r'(?:Weight|Mass|Scale|Масса|Масштаб|Вес)', next_line, re.IGNORECASE):
+                        mat = next_line.strip()
+                
+                mat = re.split(r' {2,}|\t', mat)[0].strip()
+                
+                # НОВЫЙ ФИЛЬТР ЗДЕСЬ: Если поймали название компании или пустоту - пропускаем
+                if not mat or "HAIER" in mat.upper() or "COMPANY" in mat.upper() or "INDUSTR" in mat.upper():
+                    continue 
+                
+                if mat and len(mat) < 60:  
+                    return mat.rstrip(';.,')
+
         
         for i, line in enumerate(lines):
             match = re.search(marker_pattern, line, re.IGNORECASE)
@@ -200,14 +221,15 @@ class PDFProcessor(QThread):
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         cleaned_lines = []
         
-        # Паттерны мусора из штампа (Title Block), которые Tesseract случайно приклеивает справа
+                # Паттерны мусора из штампа (Title Block), которые Tesseract случайно приклеивает справа
         noise_patterns = [
             r'\bDWG\s*No.*', r'审核\s*REVIEW.*', r'设计\s*DESIGN.*',
             r'会签\s*CHECK.*', r'批准\s*APPROVE.*', r'日期\s*DATE.*',
             r'标记\s*MARK.*', r'单位\s*DIMENSION.*', r'质量\s*WEIGHT.*',
             r'比例\s*SCALE.*', r'共\s*\d+\s*张.*', r'第\s*\d+\s*张.*',
             r'Calibri\b.*', r'俄罗斯洗衣机能耗贴.*', r'HAIER WASHING MACHINE.*',
-            r'Type:\s*Calibri.*'
+            r'Type:\s*Calibri.*', r'处数\s*QTY.*', r'更改文件号.*', r'签名\s*AUTHOR.*', # <- НОВЫЕ ПАТТЕРНЫ
+            r'СМК.*', r'CMYK.*' # <- Исключаем куски про цветопередачу, если они не номерные
         ]
         
         for line in lines:
