@@ -80,7 +80,28 @@ class PDFProcessor(QThread):
         if len(text_content.strip()) < 300 or not tech_req:
             logger.warning("Требования не найдены напрямую (возможно текст в кривых). Запуск Tesseract OCR...")
             try:
-                images = convert_from_path(path, dpi=300)
+                # --- АВТОМАТИЧЕСКИЙ ПОИСК POPPLER РЯДОМ СО СКРИПТОМ ---
+                # Получаем абсолютный путь к папке, где лежит наш скрипт (или .exe, если скомпилируем)
+                if getattr(sys, 'frozen', False):
+                    # Если программа скомпилирована через PyInstaller
+                    base_path = sys._MEIPASS
+                else:
+                    # Если запускаем как обычный .py скрипт
+                    base_path = os.path.dirname(os.path.abspath(__file__))
+                
+                # Формируем путь к папке bin внутри poppler
+                # Ожидается структура: папка_со_скриптом/poppler/Library/bin
+                poppler_path = os.path.join(base_path, 'poppler', 'Library', 'bin')
+                
+                # Проверяем, действительно ли poppler там лежит (чтобы вывести понятную ошибку, если папки нет)
+                if not os.path.exists(poppler_path):
+                     logger.error(f"Не найдена папка poppler по пути: {poppler_path}. Пожалуйста, положите папку poppler рядом со скриптом.")
+                     raise FileNotFoundError(f"Poppler не найден в {poppler_path}")
+
+                logger.info(f"Используем poppler из: {poppler_path}")
+                images = convert_from_path(path, dpi=300, poppler_path=poppler_path)
+                # ---------------------------------------------------------
+                
                 ocr_text = ""
                 for i, img in enumerate(images):
                     logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
