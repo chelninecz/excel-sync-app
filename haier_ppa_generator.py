@@ -115,8 +115,9 @@ class PDFProcessor(QThread):
     def find_material(self, text):
         """Улучшенный поиск материала в тексте чертежа (Title Block)"""
         lines = [line.strip() for line in text.split('\n') if line.strip()]
-        
-        marker_pattern = r'(?:Материал|Мат-л|Мат\.?|Material|Matl\.?|Mat\.?|材质)\s*(?:[:：\-]| {2,})\s*(.*)'
+      
+        # Добавлено слово "材料" для китайских чертежей
+        marker_pattern = r'(?:Материал|Мат-л|Мат\.?|Material|Matl\.?|Mat\.?|材质|材料)\s*(?:[:：\-]| {2,})\s*(.*)'
         
         for i, line in enumerate(lines):
             match = re.search(marker_pattern, line, re.IGNORECASE)
