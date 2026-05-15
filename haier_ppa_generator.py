@@ -144,10 +144,9 @@ class PDFProcessor(QThread):
         return ""
 
     def find_tech_requirements(self, text):
-        """Извлечение технических требований с продвинутым поиском заголовка и улучшенными списками"""
+        """Извлечение требований с объединением двуязычных пунктов (Китайский + Английский)"""
         requirements = []
         lines = [line.strip() for line in text.split('\n') if line.strip()]
-        
         start_index = -1
         
         header_patterns = [
@@ -177,16 +176,28 @@ class PDFProcessor(QThread):
         
         if start_index != -1:
             current_req = ""
+            current_num = None
             for i in range(start_index + 1, len(lines)):
                 line = lines[i]
                 
                 if line.isupper() and len(line) < 30 and not re.match(r'^\d', line) and len(line) > 3:
                     break
                 
-                if re.match(list_pattern, line):
+                match = re.match(list_pattern, line)
+                if match:
+                    # Извлекаем номер пункта, чтобы понять, это новый пункт или перевод старого
+                    num_match = re.search(r'\d+', match.group())
+                    num = num_match.group() if num_match else None
+                    
                     if current_req:
-                        requirements.append(current_req.strip())
+                        if num and current_num == num:
+                            # Номер совпадает с предыдущим -> это перевод! Объединяем их.
+                            current_req += "\n" + line
+                            continue
+                        else:
+                            requirements.append(current_req.strip())
                     current_req = line
+                    current_num = num
                 elif current_req:
                     current_req += " " + line
             
@@ -195,11 +206,21 @@ class PDFProcessor(QThread):
                 
         if not requirements:
             current_req = ""
+            current_num = None
             for line in lines:
-                if re.match(list_pattern, line):
+                match = re.match(list_pattern, line)
+                if match:
+                    num_match = re.search(r'\d+', match.group())
+                    num = num_match.group() if num_match else None
+                    
                     if current_req:
-                        requirements.append(current_req.strip())
+                        if num and current_num == num:
+                            current_req += "\n" + line
+                            continue
+                        else:
+                            requirements.append(current_req.strip())
                     current_req = line
+                    current_num = num
                 elif current_req and not line.isupper() and len(line) > 2:
                     current_req += " " + line
                 else:
@@ -332,7 +353,8 @@ class App(QMainWindow):
             self.in_material.setText(data['material'])
         
         if data['tech_req']:
-            self.edt_tech_req.setText("\n".join(data['tech_req']))
+            # ВАЖНО: Разделяем пункты ПУСТОЙ СТРОКОЙ (\n\n), чтобы внутренние переводы строк не ломали логику
+            self.edt_tech_req.setText("\n\n".join(data['tech_req']))
         else:
             self.edt_tech_req.setText("Требования не найдены автоматически. Пожалуйста, введите их вручную.")
             
@@ -363,7 +385,9 @@ class App(QMainWindow):
             ws = wb.active 
             
             tech_req_text = self.edt_tech_req.toPlainText()
-            tech_req_list = [line.strip() for line in tech_req_text.split('\n') if line.strip()]
+            
+            # ВАЖНО: Разбиваем текст только по ПУСТЫМ строкам (сохраняя переводы внутри пункта)
+            tech_req_list = [item.strip() for item in re.split(r'\n\s*\n', tech_req_text) if item.strip()]
             
             replacements = {
                 "{SUPPLIER}": self.in_supplier.text(),
@@ -372,7 +396,8 @@ class App(QMainWindow):
                 "{MATERIAL}": self.in_material.text(),
             }
             
-            for i in range(5):
+            # Теперь поддерживаем до 50 требований, а не 5!
+            for i in range(50):
                 key = f"{{TECH_REQ_{i+1}}}"
                 if i < len(tech_req_list):
                     replacements[key] = tech_req_list[i]
@@ -384,18 +409,20 @@ class App(QMainWindow):
             for row in ws.iter_rows():
                 for cell in row:
                     if cell.value and isinstance(cell.value, str):
-                        original = cell.value
-                        modified = original
+                        original = str(cell.value)
+                        
+                        # Защита от опечаток: убираем лишние пробелы в Excel { TECH_REQ_1 } -> {TECH_REQ_1}
+                        modified = re.sub(r'\{\s+([^}]+?)\s+\}', r'{\1}', original)
                         
                         for key, val in replacements.items():
                             if key in modified:
                                 modified = modified.replace(key, val)
                         
-                        if "{TECH_REQ}" in original and "{TECH_REQ_" not in original:
-                            cell.alignment = cell.alignment.copy(wrap_text=True)
-                        
                         if modified != original:
                             cell.value = modified
+                            # Если текст длинный, автоматически включаем перенос по словам в ячейке
+                            if "{" not in modified and len(modified) > 15:
+                                cell.alignment = cell.alignment.copy(wrap_text=True)
             
             wb.save(save_path)
             self.status_bar.showMessage(f"Файл успешно сохранен: {save_path}")
