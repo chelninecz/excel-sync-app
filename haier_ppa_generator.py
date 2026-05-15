@@ -62,14 +62,23 @@ class PDFProcessor(QThread):
         text_content = ""
         
         logger.info("Попытка прямого извлечения текста (pdfplumber)...")
-        with pdfplumber.open(path) as pdf:
-            for i, page in enumerate(pdf.pages):
-                text = page.extract_text(x_tolerance=2, y_tolerance=3)
-                if text:
-                    text_content += text + "\n"
+        try:
+            with pdfplumber.open(path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text(x_tolerance=2, y_tolerance=3)
+                    if text:
+                        text_content += text + "\n"
+        except Exception as e:
+            logger.error(f"Ошибка pdfplumber: {e}")
         
-        if len(text_content.strip()) < 100:
-            logger.warning("Текст не найден или его мало (скан/вектор). Запуск Tesseract OCR...")
+        # Предварительная проверка найденных данных
+        material = self.find_material(text_content)
+        tech_req = self.find_tech_requirements(text_content)
+        
+        # ГЛАВНОЕ ИСПРАВЛЕНИЕ: Если pdfplumber не нашел требования (текст в кривых) 
+        # или текста слишком мало (< 300 символов), принудительно запускаем OCR!
+        if len(text_content.strip()) < 300 or not tech_req:
+            logger.warning("Требования не найдены напрямую (возможно текст в кривых). Запуск Tesseract OCR...")
             try:
                 images = convert_from_path(path, dpi=300)
                 ocr_text = ""
@@ -77,17 +86,21 @@ class PDFProcessor(QThread):
                     logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
                     ocr_page = pytesseract.image_to_string(img, lang='rus+eng+chi_sim')
                     ocr_text += ocr_page + "\n"
-                text_content = ocr_text
+                
+                # Добавляем распознанный текст к общему
+                text_content = text_content + "\n\n" + ocr_text
                 logger.info("OCR распознавание завершено.")
+                
+                # Повторный поиск в распознанном OCR тексте
+                material = self.find_material(text_content) or material
+                tech_req = self.find_tech_requirements(text_content)
+                
             except Exception as ocr_err:
                 logger.error(f"Ошибка Tesseract OCR: {ocr_err}")
         
         logger.debug("--- ИЗВЛЕЧЕННЫЙ СЫРОЙ ТЕКСТ НАЧАЛО ---")
         logger.debug(f"\n{text_content}")
         logger.debug("--- ИЗВЛЕЧЕННЫЙ СЫРОЙ ТЕКСТ КОНЕЦ ---")
-        
-        material = self.find_material(text_content)
-        tech_req = self.find_tech_requirements(text_content)
         
         logger.info(f"Найденный материал: '{material}'")
         logger.info(f"Найдено технических требований: {len(tech_req)} пунктов")
