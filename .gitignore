@@ -1,1 +1,29 @@
-Nothing should be ignored since only a README.md file was modified and no build artifacts, dependencies, or temp files were included in the changes.
+```
+# Build artifacts
+*.spec
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+.venv/
+venv/
+env/
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+```
