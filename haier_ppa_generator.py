@@ -82,6 +82,7 @@ class PDFProcessor(QThread):
                     base_path = os.path.dirname(os.path.abspath(__file__))
                 
                 poppler_path = os.path.join(base_path, 'poppler', 'Library', 'bin')
+                os.environ['PATH'] = poppler_path + os.pathsep + os.environ.get('PATH', '')
                 images = convert_from_path(path, dpi=400, poppler_path=poppler_path)
               
                 logger.info("Инициализация движка RapidOCR с геометрической реконструкцией текста...")
