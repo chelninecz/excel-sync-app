@@ -230,9 +230,23 @@ class PDFProcessor(QThread):
 
     def find_tech_requirements(self, text):
         requirements = []
-        text = re.sub(r'([一-龥])\s+([一-龥])', r'\1\2', text)
+        
+        # 1. Убираем лишние пробелы между китайскими символами
+        text = re.sub(r'([一 - 龥])\s+([一 - 龥])', r'\1\2', text)
+        
+        # 2. Разделяем китайские и латинские символы/цифры
+        text = re.sub(r'([一 - 龥])([A-Za-z0-9])', r'\1 \2', text)
+        text = re.sub(r'([A-Za-z0-9])([一 - 龥])', r'\1 \2', text)
+        
+        # 3. [a-z][A-Z] для camelCase
+        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+        
+        # 4. Разделяем вокруг знаков препинания
+        for char in '<>()[]{};:,.':
+            text = re.sub(r'([a-zA-Z])(' + re.escape(char) + ')', r'\1 \2', text)
+            text = re.sub('(' + re.escape(char) + r')([a-zA-Z])', r'\1 \2', text)
+        
         lines = [line.strip() for line in text.split('\n') if line.strip()]
-        cleaned_lines = []
         
         noise_splitters = [
             r'\bDWG\s*No', r'审核\s*REVIEW', r'设计\s*DESIGN', r'会签\s*CHECK',
