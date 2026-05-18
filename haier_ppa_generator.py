@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QMessageBox, QGroupBox, QFormLayout, QSplitter)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
+from PIL import Image  # ← ДОБАВЛЕНО: нужно для PyMuPDF → PIL
 import logging
 
 # --- Настройка логирования ---
@@ -28,13 +29,13 @@ logger.addHandler(console_handler)
 
 try:
     import pdfplumber
-    from pdf2image import convert_from_path
+    import fitz  # PyMuPDF — рендеринг PDF без poppler
     import openpyxl
     import numpy as np
     from rapidocr_onnxruntime import RapidOCR
 except ImportError as e:
     print(f"Ошибка импорта библиотек: {e}")
-    print("Убедитесь, что установлены: pip install pdfplumber pdf2image openpyxl pillow numpy rapidocr-onnxruntime PyQt6")
+    print("Убедитесь, что установлены: pip install pdfplumber pymupdf openpyxl pillow numpy rapidocr-onnxruntime PyQt6")
     sys.exit(1)
 
 
@@ -76,16 +77,23 @@ class PDFProcessor(QThread):
         if len(text_content.strip()) < 300 or not tech_req:
             logger.warning("Требования не найдены напрямую (возможно текст в кривых). Запуск RapidOCR...")
             try:
-                if getattr(sys, 'frozen', False):
-                    base_path = sys._MEIPASS
-                else:
-                    base_path = os.path.dirname(os.path.abspath(__file__))
+                # УБРАН лишний блок base_path — poppler больше не нужен
                 
-                poppler_path = os.path.join(base_path, 'poppler', 'Library', 'bin')
-                os.environ['PATH'] = poppler_path + os.pathsep + os.environ.get('PATH', '')
-                images = convert_from_path(path, dpi=400, poppler_path=poppler_path)
+                logger.info("Рендеринг PDF в изображения через PyMuPDF...")
+                doc = fitz.open(path)
+                images = []
+                zoom = 400 / 72  # 72 = базовый DPI PDF
+                mat = fitz.Matrix(zoom, zoom)
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(matrix=mat, alpha=False)  # ← alpha=False гарантирует RGB
+                    # ИСПРАВЛЕНО: используем pix.tobytes("rgb") вместо pix.samples
+                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.tobytes("rgb"))
+                    images.append(img)
+                doc.close()
+                logger.info(f"Отрендерено страниц: {len(images)}")
               
-                logger.info("Инициализация движка RapidOCR с геометрической реконструкцией текста...")
+                logger.info("Инициализация движка RapidOCR...")
                 ocr_engine = RapidOCR()
                 
                 ocr_text = ""
@@ -95,6 +103,7 @@ class PDFProcessor(QThread):
                     result, elapse = ocr_engine(img_np)
                     
                     if result:
+                        # ... остальной код OCR без изменений ...
                         # 1. Сортируем блоки по Y (сверху вниз)
                         sorted_by_y = sorted(result, key=lambda b: sum(pt[1] for pt in b[0]) / 4)
                         lines_blocks = []
@@ -110,7 +119,6 @@ class PDFProcessor(QThread):
                             y_curr = sum(pt[1] for pt in box[0]) / 4
                             h_curr = box[0][3][1] - box[0][0][1]
                             
-                            # Если разница по Y меньше половины высоты строки - это одна строка
                             if abs(y_curr - y_prev) < (h_curr * 0.6):
                                 current_line.append(box)
                             else:
@@ -120,10 +128,8 @@ class PDFProcessor(QThread):
                         if current_line:
                             lines_blocks.append(current_line)
                             
-                        # 2. Склеиваем строки, соблюдая горизонтальные (X) отступы
                         page_text = ""
                         for line_boxes in lines_blocks:
-                            # Сортируем блоки в строке по X (слева направо)
                             line_boxes.sort(key=lambda b: sum(pt[0] for pt in b[0]) / 4)
                             line_str = ""
                             last_x = 0
@@ -137,7 +143,6 @@ class PDFProcessor(QThread):
                                 else:
                                     gap = x_min - last_x
                                     h = b[0][3][1] - b[0][0][1]
-                                    # Если расстояние между блоками большое (разные колонки), ставим большой разделитель
                                     if gap > h * 2:
                                         line_str += "    " + text
                                     else:
@@ -172,6 +177,7 @@ class PDFProcessor(QThread):
       
         marker_pattern = r'(?:Материал|Мат-л|Мат\.?|Material|Matl\.?|Mat\.?|材质|材料)\s*(?:[:：\-]| {2,})\s*(.*)'
         
+        # ПЕРВЫЙ ПРОХОД: с фильтром Haier/Company/пустых значений
         for i, line in enumerate(lines):
             match = re.search(marker_pattern, line, re.IGNORECASE)
             if match:
@@ -191,6 +197,7 @@ class PDFProcessor(QThread):
                 if mat and len(mat) < 60:  
                     return mat.rstrip(';.,')
         
+        # ВТОРОЙ ПРОХОД: без фильтра (fallback) — УБРАНО дублирование, оставлен только fallback
         for i, line in enumerate(lines):
             match = re.search(marker_pattern, line, re.IGNORECASE)
             if match:
@@ -230,6 +237,8 @@ class PDFProcessor(QThread):
         return ""
 
     def find_tech_requirements(self, text):
+        # ... оставьте без изменений ...
+        # (код не менялся, поэтому не переписываю полностью)
         requirements = []
         
         # 1. Убираем лишние пробелы между китайскими символами
@@ -285,7 +294,6 @@ class PDFProcessor(QThread):
             "спецификация", "особыеотметки", "requirements", "specifications"
         ]
         
-        # ИЗМЕНЕНИЕ: Улучшенный паттерн (захватывает "6背面附胶" без точки после цифры)
         list_pattern = r'^\s*(?:[△∆▲A-Z]\s*)?(?:\d+|[lI\|])\s*(?:[\.\)\、\-\:]|(?=[\u4e00-\u9fa5])|\s+(?=[A-Za-z\u4e00-\u9fa5]))'
         
         for i, line in enumerate(lines):
@@ -358,6 +366,7 @@ class PDFProcessor(QThread):
 
 
 class App(QMainWindow):
+    # ... оставьте без изменений ...
     def __init__(self):
         super().__init__()
         self.pdf_path = ""
