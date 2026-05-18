@@ -256,6 +256,7 @@ class PDFProcessor(QThread):
             r'签名\s*AUTHOR', r'海尔洗衣机', r'俄罗斯洗衣机', r'ENERGYCONSUMPTIONSTICKER'
         ]
         
+        cleaned_lines = []
         for line in lines:
             cl = line
             # Очистка левого вертикального штампа чертежа
