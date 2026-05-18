@@ -32,15 +32,23 @@ for root, dirs, files in os.walk(onnx_path):
 
 # 3. Poppler — ВСЕ файлы как datas с сохранением структуры папок
 poppler_base = os.path.join(base_path, 'poppler')
+print("=" * 50)
+print(f"SPEC base_path: {base_path}")
+print(f"Poppler base: {poppler_base}")
+print(f"Exists: {os.path.exists(poppler_base)}")
+
 if os.path.exists(poppler_base):
+    count = 0
     for root, dirs, files in os.walk(poppler_base):
         for f in files:
             src = os.path.join(root, f)
             dst = os.path.relpath(root, base_path)
             added_datas.append((src, dst))
-    print(f"[OK] Poppler найден: {poppler_base}")
+            count += 1
+    print(f"[OK] Poppler: добавлено {count} файлов")
 else:
-    print(f"[WARN] Poppler НЕ найден по пути: {poppler_base}")
+    print(f"[FAIL] Poppler НЕ найден!")
+print("=" * 50)
 
 # 4. pdf2image
 import pdf2image
