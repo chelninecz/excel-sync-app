@@ -37,11 +37,13 @@ for root, dirs, files in os.walk(onnx_path):
             added_binaries.append((src, dst))
 
 # 3. Poppler (если есть в проекте)
-poppler_bin = os.path.join(base_path, 'poppler', 'Library', 'bin')
-if os.path.exists(poppler_bin):
-    for f in os.listdir(poppler_bin):
-        if f.endswith('.dll') or f.endswith('.exe'):
-            added_binaries.append((os.path.join(poppler_bin, f), 'poppler/Library/bin'))
+poppler_base = os.path.join(base_path, 'poppler')
+if os.path.exists(poppler_base):
+    for root, dirs, files in os.walk(poppler_base):
+        for f in files:
+            src = os.path.join(root, f)
+            dst = os.path.relpath(root, base_path)
+            added_datas.append((src, dst))
 
 poppler_share = os.path.join(base_path, 'poppler', 'share')
 if os.path.exists(poppler_share):
