@@ -6,7 +6,6 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QMessageBox, QGroupBox, QFormLayout, QSplitter)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
-from PIL import Image  # ← ДОБАВЛЕНО: нужно для PyMuPDF → PIL
 import logging
 
 # --- Настройка логирования ---
@@ -77,19 +76,17 @@ class PDFProcessor(QThread):
         if len(text_content.strip()) < 300 or not tech_req:
             logger.warning("Требования не найдены напрямую (возможно текст в кривых). Запуск RapidOCR...")
             try:
-                # УБРАН лишний блок base_path — poppler больше не нужен
-                
                 logger.info("Рендеринг PDF в изображения через PyMuPDF...")
                 doc = fitz.open(path)
                 images = []
                 zoom = 400 / 72
                 mat = fitz.Matrix(zoom, zoom)
                 for page_num in range(len(doc)):
-                  page = doc.load_page(page_num)
-                  pix = page.get_pixmap(matrix=mat, alpha=False)
-                # Напрямую в numpy array RGB — без PIL
-                  img_np = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
-                  images.append(img_np)
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(matrix=mat, alpha=False)
+                    # Напрямую в numpy array RGB — без PIL
+                    img_np = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+                    images.append(img_np)
                 doc.close()
                 logger.info(f"Отрендерено страниц: {len(images)}")
 
@@ -98,11 +95,10 @@ class PDFProcessor(QThread):
 
                 ocr_text = ""
                 for i, img_np in enumerate(images):
-                logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
-                result, elapse = ocr_engine(img_np)  # ← напрямую numpy array
+                    logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
+                    result, elapse = ocr_engine(img_np)  # ← напрямую numpy array
                     
                     if result:
-                        # ... остальной код OCR без изменений ...
                         # 1. Сортируем блоки по Y (сверху вниз)
                         sorted_by_y = sorted(result, key=lambda b: sum(pt[1] for pt in b[0]) / 4)
                         lines_blocks = []
@@ -127,6 +123,7 @@ class PDFProcessor(QThread):
                         if current_line:
                             lines_blocks.append(current_line)
                             
+                        # 2. Склеиваем строки, соблюдая горизонтальные (X) отступы
                         page_text = ""
                         for line_boxes in lines_blocks:
                             line_boxes.sort(key=lambda b: sum(pt[0] for pt in b[0]) / 4)
@@ -176,7 +173,6 @@ class PDFProcessor(QThread):
       
         marker_pattern = r'(?:Материал|Мат-л|Мат\.?|Material|Matl\.?|Mat\.?|材质|材料)\s*(?:[:：\-]| {2,})\s*(.*)'
         
-        # ПЕРВЫЙ ПРОХОД: с фильтром Haier/Company/пустых значений
         for i, line in enumerate(lines):
             match = re.search(marker_pattern, line, re.IGNORECASE)
             if match:
@@ -196,22 +192,6 @@ class PDFProcessor(QThread):
                 if mat and len(mat) < 60:  
                     return mat.rstrip(';.,')
         
-        # ВТОРОЙ ПРОХОД: без фильтра (fallback) — УБРАНО дублирование, оставлен только fallback
-        for i, line in enumerate(lines):
-            match = re.search(marker_pattern, line, re.IGNORECASE)
-            if match:
-                mat = match.group(1).strip()
-                
-                if not mat and i + 1 < len(lines):
-                    next_line = lines[i+1]
-                    if len(next_line) < 50 and not re.search(r'(?:Weight|Mass|Scale|Масса|Масштаб|Вес)', next_line, re.IGNORECASE):
-                        mat = next_line.strip()
-                
-                mat = re.split(r' {2,}|\t', mat)[0].strip()
-                
-                if mat and len(mat) < 60:  
-                    return mat.rstrip(';.,')
-
         exact_acronyms = [r'\bABS\b', r'\bPP\b', r'\bPC\b', r'\bPVC\b', r'\bPOM\b', r'\bPE\b', r'\bPET\b']
         
         known_materials = [
@@ -236,8 +216,6 @@ class PDFProcessor(QThread):
         return ""
 
     def find_tech_requirements(self, text):
-        # ... оставьте без изменений ...
-        # (код не менялся, поэтому не переписываю полностью)
         requirements = []
         
         # 1. Убираем лишние пробелы между китайскими символами
@@ -365,7 +343,6 @@ class PDFProcessor(QThread):
 
 
 class App(QMainWindow):
-    # ... оставьте без изменений ...
     def __init__(self):
         super().__init__()
         self.pdf_path = ""
