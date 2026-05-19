@@ -82,25 +82,24 @@ class PDFProcessor(QThread):
                 logger.info("Рендеринг PDF в изображения через PyMuPDF...")
                 doc = fitz.open(path)
                 images = []
-                zoom = 400 / 72  # 72 = базовый DPI PDF
+                zoom = 400 / 72
                 mat = fitz.Matrix(zoom, zoom)
                 for page_num in range(len(doc)):
-                    page = doc.load_page(page_num)
-                    pix = page.get_pixmap(matrix=mat, alpha=False)  # ← alpha=False гарантирует RGB
-                    # ИСПРАВЛЕНО: используем pix.tobytes("rgb") вместо pix.samples
-                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.tobytes("rgb"))
-                    images.append(img)
+                  page = doc.load_page(page_num)
+                  pix = page.get_pixmap(matrix=mat, alpha=False)
+                # Напрямую в numpy array RGB — без PIL
+                  img_np = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+                  images.append(img_np)
                 doc.close()
                 logger.info(f"Отрендерено страниц: {len(images)}")
-              
+
                 logger.info("Инициализация движка RapidOCR...")
                 ocr_engine = RapidOCR()
-                
+
                 ocr_text = ""
-                for i, img in enumerate(images):
-                    logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
-                    img_np = np.array(img)
-                    result, elapse = ocr_engine(img_np)
+                for i, img_np in enumerate(images):
+                logger.info(f"OCR: обработка страницы {i+1} из {len(images)}...")
+                result, elapse = ocr_engine(img_np)  # ← напрямую numpy array
                     
                     if result:
                         # ... остальной код OCR без изменений ...
